@@ -12,8 +12,10 @@ namespace dorm {
     {
     public:
         using id_t = TID;
+        TID id() const { return _id; }
+        void id(TID pid) { _id = pid; }
     protected:
-        TID id;
+        TID _id;
     };
 
     template <typename T>
@@ -33,20 +35,55 @@ namespace dorm {
     struct DbRecord
     {        
         virtual std::any get(const std::string& columnName) = 0;
+        virtual void set(const std::string& columnName, std::any&& value) = 0;
         virtual ~DbRecord() = default;
     };
 
     struct Session;
+
     class EntityMapBase;
     template<typename T> class EntityMap;
+
+    class FieldTypeBase {
+    public:
+        FieldTypeBase(const std::type_index& type) : _type(type) {}
+        std::type_index type() const { return _type; }
+        virtual bool equal(const std::any& lhs, const std::any& rhs) const = 0;
+        virtual ~FieldTypeBase() = default;
+    private:
+        std::type_index _type;
+    };
+
+    template<typename T>
+    class FieldType: public FieldTypeBase {
+    public:
+        FieldType() : FieldTypeBase(typeid(T)) {}
+        bool equal(const std::any& lhs, const std::any& rhs) const override {
+            return (!lhs.has_value() && !rhs.has_value()) || 
+                (lhs.type() == typeid(T) && rhs.type() == typeid(T) 
+                    && std::any_cast<const T&>(lhs) == std::any_cast<const T&>(rhs));
+        }
+    };
+    
 
     class Database
     {
     protected:
         std::map<std::type_index, std::unique_ptr<EntityMapBase>> entityMaps;
+        virtual ~Database() = default;
     public:
-        virtual std::unique_ptr<DbRecord> loadRecord(const std::any& id, const std::type_info& type_info) = 0;
+        virtual std::unique_ptr<DbRecord> load(const std::any& id, const std::type_info& type_info) = 0;
+        virtual std::unique_ptr<DbRecord> create(const std::type_info& type_info) = 0;
+        virtual void save(DbRecord* record, const std::type_info& type) = 0;
         virtual std::unique_ptr<Session> createSession() = 0;
+        virtual void doInit() {};
+
+        std::vector<std::unique_ptr<FieldTypeBase>> SupportedFieldTypes;
+        Database() {
+            SupportedFieldTypes.push_back(std::make_unique<FieldType<int>>());
+            SupportedFieldTypes.push_back(std::make_unique<FieldType<std::string>>());
+            doInit();
+        };
 
         template<typename T>
         void configure() {
@@ -65,15 +102,26 @@ namespace dorm {
     struct Session
     {
     private:
-        Database* database;
+        Database* _db;
     public:
-        Session(Database* database) : database(database) {}
+        Session(Database* db) : _db(db) {}
 
         template<typename T>
         std::unique_ptr<T> load(typename T::id_t id) {
-            auto map = database->getEntityMap<T>();
-            std::unique_ptr<DbRecord> record = database->loadRecord(id, typeid(T));
+            auto map = _db->getEntityMap<T>();
+            std::unique_ptr<DbRecord> record = _db->load(id, typeid(T));
+            if (!record) {
+                return nullptr;
+            }
             return map.create(record.get());
+        }
+
+        template<typename T>
+        void save(T& entity) {
+            auto map = _db->getEntityMap<T>();
+            std::unique_ptr<DbRecord> record = _db->create(typeid(T));
+            map.fill(record.get(), entity);
+            _db->save(record.get(), typeid(T));
         }
     };
 
@@ -94,12 +142,22 @@ namespace dorm {
     };
 
 
-    struct EntityMapBase {};
+    struct EntityMapBase {
+        std::string tableName() const { return _tableName; }
+        virtual std::vector<std::tuple<std::string, std::type_index>> columns() const = 0;
+        virtual ~EntityMapBase() = default;
+    protected:
+        EntityMapBase(const std::string& tableName) : _tableName(tableName) {}
+        std::string _tableName;        
+    };
 
     template<typename T>
     class EntityMap : public EntityMapBase {
-        std::string tableName;
-        std::map<std::string, std::function<void(T&, const std::any&)>> setters;
+        std::map<std::string, std::tuple<
+            std::type_index, 
+            std::function<void(T&, const std::any&)>, 
+            std::function<std::any(const T&)>
+        >> accessors;
 
         template<typename TF>
         static const TF& cast_from_any(const std::any& v) {
@@ -107,39 +165,65 @@ namespace dorm {
             {
                 return std::any_cast<const TF&>(v); 
             }
-            std::cout << "setter failed due to type mismatch, from " << typeid(v).name() 
+            std::cout << "Failed due to type mismatch, from " << typeid(v).name() 
                 << " to " << typeid(TF).name() << std::endl;
             throw std::bad_any_cast();
         }
 
     protected:
-        EntityMap(const std::string& tableName) : tableName(tableName) {}
+        EntityMap(const std::string& tableName) : EntityMapBase(tableName) {}
+
+        void id(const std::string& columnName, typename T::id_t T::*idField) {
+            field(columnName, idField);
+        }
 
         template<typename TF>
-        void mapField(const std::string& columnName, void (T::*setter)(const TF& value)) {
-            setters.try_emplace(columnName, [setter](T& t, const std::any& v) { 
-                (t.*setter)(cast_from_any<TF>(v)); 
-            });
-            
+        void field(const std::string& columnName, TF T::*field) {
+            accessors.try_emplace(columnName, std::make_tuple(
+                std::type_index(typeid(TF)),
+                [field](T& t, const std::any& v) { 
+                    (t.*field) = cast_from_any<TF>(v); 
+                }, 
+                [field](const T& t) -> std::any { 
+                    return std::any(t.*field); 
+                }));
         };
 
-        template<typename TF>
-        void mapField(const std::string& columnName, std::function<void(T&, const TF&)> setter) {
-            setters.try_emplace(columnName, [setter](T& t, const std::any& v) { 
-                setter(t, cast_from_any<TF>(v)); 
-            });
-        };
     public:
         using entity_t = T;
-        std::string getTableName() const { return tableName; }
         std::unique_ptr<T> create(DbRecord* record) {
             auto instance = std::unique_ptr<T>(new T());
-            for (auto& [columnName, setter] : setters) {
-                setter(*instance, record->get(columnName));
+            for (auto& [columnName, accessor] : accessors) {
+                auto [_, setter, __] = accessor;
+                setter (*instance, record->get(columnName));
             }
             return instance;
         }
+
+        void fill(DbRecord* record, const entity_t& entity) {
+            for (auto& [columnName, accessor] : accessors) {
+                auto [_, __, getter] = accessor;
+                record->set(columnName, getter(entity));
+            }
+        }
+
+        template<typename TPtr>
+        struct MemberPtrTraits;
+        
+        template<typename TM>
+        struct MemberPtrTraits<TM entity_t::*> {
+            using member_t = TM;
+        };
+
+        std::vector<std::tuple<std::string, std::type_index>> columns() const override {
+            std::vector<std::tuple<std::string, std::type_index>> result;
+            for (auto& [columnName, accessor] : accessors) {
+                result.push_back(std::make_tuple(columnName, std::get<0>(accessor)));
+            }
+            return result;
+        };
     };
+
 }
 
 

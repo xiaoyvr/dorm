@@ -7,15 +7,15 @@ using namespace dorm;
 
 class Person : public Entity<Person, int>
 {
-    std::string name;
-    int age;
+    std::string _name;
+    int _age;
 
     Person() {}
 public:
-    Person(std::string name, int age) : name(name), age(age) {}
-    std::string getName() const { return name; }
-    int getAge() const { return age; }    
-    void setName(const std::string & name) { this-> name = name; }
+    Person(std::string name, int age) : _name(name), _age(age) {}
+    std::string name() const { return _name; }
+    int age() const { return _age; }    
+    void name(const std::string & name) { _name = name; }
 
     friend class PersonMap;
     friend class EntityMap<Person>;
@@ -24,22 +24,58 @@ public:
 
 class PersonMap : public EntityMap<Person>
 {
-    public:
+public:
     PersonMap() : EntityMap<Person>("person") {
-        mapField<std::string>("name", &Person::setName);
-        mapField<std::string>("name", [](Person p, const std::string& name) { p.name = name; });
+        id("id", &Person::_id);
+        field("name", &Person::_name);
+        field("age", &Person::_age);
     }
 };
 
-TEST(DormTest, EntityTest)
+TEST(DormTest, should_return_null_if_nothing_in_database)
 {
     in_mem::InMemDatabase db;
     db.configure<PersonMap>();
 
-    db.init();
-
     auto session = db.createSession();
     auto p = session->load<Person>(1);
 
-    ASSERT_FALSE(p == nullptr);
+    ASSERT_EQ(p, nullptr);
+}
+
+TEST(DormTest, should_return_if_entity_already_in_database)
+{
+    in_mem::InMemDatabase db;
+    db.configure<PersonMap>();
+
+
+    auto session = db.createSession();
+    auto p = Person("John Doe", 30);
+    session->save(p);
+
+    auto p1 = session->load<Person>(p.id());
+
+    ASSERT_NE(p1, nullptr);
+    ASSERT_EQ(p1->age(), 30);
+    ASSERT_EQ(p1->name(), "John Doe");
+}
+
+TEST(DormTest, should_store_two_record_in_database)
+{
+    in_mem::InMemDatabase db;
+    db.configure<PersonMap>();
+
+
+    auto session = db.createSession();
+    auto p = Person("John Doe", 30);
+    session->save(p);
+
+    auto p1 = Person("John Smith", 35);
+    session->save(p1);
+
+    auto p1 = session->load<Person>(p1.id());
+
+    ASSERT_NE(p1, nullptr);
+    ASSERT_EQ(p1->age(), 30);
+    ASSERT_EQ(p1->name(), "John Doe");
 }
