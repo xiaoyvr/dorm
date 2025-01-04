@@ -71,13 +71,13 @@ namespace dorm {
     protected:
         std::map<std::type_index, std::unique_ptr<EntityMapBase>> entityMaps;
         virtual ~Database() = default;
+        virtual void doInit() {};
     public:
         virtual std::unique_ptr<DbRecord> load(const std::any& id, const std::type_info& type_info) = 0;
         virtual std::unique_ptr<DbRecord> create(const std::type_info& type_info) = 0;
         virtual void save(DbRecord* record, const std::type_info& type) = 0;
         virtual std::unique_ptr<Session> createSession() = 0;
-        virtual void doInit() {};
-
+        
         std::vector<std::unique_ptr<FieldTypeBase>> SupportedFieldTypes;
         Database() {
             SupportedFieldTypes.push_back(std::make_unique<FieldType<int>>());
@@ -108,7 +108,7 @@ namespace dorm {
 
         template<typename T>
         std::unique_ptr<T> load(typename T::id_t id) {
-            auto map = _db->getEntityMap<T>();
+            auto& map = _db->getEntityMap<T>();
             std::unique_ptr<DbRecord> record = _db->load(id, typeid(T));
             if (!record) {
                 return nullptr;
@@ -118,7 +118,7 @@ namespace dorm {
 
         template<typename T>
         void save(T& entity) {
-            auto map = _db->getEntityMap<T>();
+            auto& map = _db->getEntityMap<T>();
             std::unique_ptr<DbRecord> record = _db->create(typeid(T));
             map.fill(record.get(), entity);
             _db->save(record.get(), typeid(T));
@@ -144,17 +144,38 @@ namespace dorm {
 
     struct EntityMapBase {
         std::string tableName() const { return _tableName; }
-        virtual std::vector<std::tuple<std::string, std::type_index>> columns() const = 0;
+        virtual std::vector<std::tuple<std::string, std::type_index, bool>> columns() const = 0;
         virtual ~EntityMapBase() = default;
     protected:
         EntityMapBase(const std::string& tableName) : _tableName(tableName) {}
         std::string _tableName;        
     };
 
+    struct ColumnConfig {
+        ColumnConfig(const std::string& name, const std::type_index& type): 
+            _name(name),
+            _type(type), _isKey(false) {};
+        ~ColumnConfig() = default;
+        template<typename> friend class EntityMap;
+    protected:
+        std::type_index _type;
+        bool _isKey;
+        std::string _name;
+    };
+
+    struct IdColumnConfig : public ColumnConfig {
+        IdColumnConfig(const std::string& name, const std::type_index& type) : ColumnConfig(name, type) {
+            _isKey = true;
+        }
+    };
+
     template<typename T>
     class EntityMap : public EntityMapBase {
-        std::map<std::string, std::tuple<
-            std::type_index, 
+
+        EntityMap(const EntityMap& other) = delete;
+
+        std::vector<std::tuple<
+            std::unique_ptr<ColumnConfig>, 
             std::function<void(T&, const std::any&)>, 
             std::function<std::any(const T&)>
         >> accessors;
@@ -170,17 +191,10 @@ namespace dorm {
             throw std::bad_any_cast();
         }
 
-    protected:
-        EntityMap(const std::string& tableName) : EntityMapBase(tableName) {}
-
-        void id(const std::string& columnName, typename T::id_t T::*idField) {
-            field(columnName, idField);
-        }
-
         template<typename TF>
-        void field(const std::string& columnName, TF T::*field) {
-            accessors.try_emplace(columnName, std::make_tuple(
-                std::type_index(typeid(TF)),
+        void field(const std::string& columnName, TF T::*field, ColumnConfig* pConfig) {
+            accessors.push_back(std::make_tuple(
+                std::unique_ptr<ColumnConfig>(pConfig),
                 [field](T& t, const std::any& v) { 
                     (t.*field) = cast_from_any<TF>(v); 
                 }, 
@@ -189,21 +203,38 @@ namespace dorm {
                 }));
         };
 
+
+    protected:
+        EntityMap(const std::string& tableName) : EntityMapBase(tableName) {}
+
+        IdColumnConfig* id(const std::string& columnName, typename T::id_t T::*idField) {
+            auto pc = new IdColumnConfig(columnName, typeid(typename T::id_t));
+            field(columnName, idField, pc);
+            return pc;
+        }
+
+        template<typename TF>
+        ColumnConfig* field(const std::string& columnName, TF T::*field) {
+            auto pc = new ColumnConfig(columnName, typeid(TF));
+            this->field(columnName, field, pc);
+            return pc;
+        };
+
     public:
         using entity_t = T;
-        std::unique_ptr<T> create(DbRecord* record) {
+        std::unique_ptr<T> create(DbRecord* record) const {
             auto instance = std::unique_ptr<T>(new T());
-            for (auto& [columnName, accessor] : accessors) {
-                auto [_, setter, __] = accessor;
-                setter (*instance, record->get(columnName));
+            for (auto& accessor : accessors) {
+                auto& [c, setter, __] = accessor;
+                setter (*instance, record->get(c->_name));
             }
             return instance;
         }
 
-        void fill(DbRecord* record, const entity_t& entity) {
-            for (auto& [columnName, accessor] : accessors) {
-                auto [_, __, getter] = accessor;
-                record->set(columnName, getter(entity));
+        void fill(DbRecord* record, const entity_t& entity) const {
+            for (auto& accessor : accessors) {
+                auto& [c, __, getter] = accessor;
+                record->set(c->_name, getter(entity));
             }
         }
 
@@ -215,10 +246,11 @@ namespace dorm {
             using member_t = TM;
         };
 
-        std::vector<std::tuple<std::string, std::type_index>> columns() const override {
-            std::vector<std::tuple<std::string, std::type_index>> result;
-            for (auto& [columnName, accessor] : accessors) {
-                result.push_back(std::make_tuple(columnName, std::get<0>(accessor)));
+        std::vector<std::tuple<std::string, std::type_index, bool>> columns() const override {
+            std::vector<std::tuple<std::string, std::type_index, bool>> result;
+            for (auto& accessor : accessors) {
+                auto& [c, _, __] = accessor;
+                result.push_back(std::make_tuple(c->_name, c->_type, c->_isKey));
             }
             return result;
         };

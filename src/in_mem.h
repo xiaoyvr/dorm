@@ -100,7 +100,7 @@ namespace dorm::in_mem {
             });
 
             Table::row_t values;
-            for (auto& [columnName, _] : map->columns()) {
+            for (auto& [columnName, _, __] : map->columns()) {
                 values.push_back(std::forward<std::any>(pRecord->get(columnName)));
             } 
             (*it)->upsert(std::move(values));
@@ -110,8 +110,8 @@ namespace dorm::in_mem {
         void doInit() override {
             for (auto& [t, map] : entityMaps) {
                 auto ptable = std::make_unique<Table>(map->tableName(), this);
-                for (auto& [columnName, fieldType] : map->columns()) {
-                    ptable->addColumn(columnName, fieldType);
+                for (auto& [columnName, fieldType, isKey] : map->columns()) {
+                    ptable->addColumn(columnName, fieldType, isKey);
                 }
                 tables.push_back(std::move(ptable));
             }

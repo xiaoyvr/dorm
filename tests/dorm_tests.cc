@@ -73,9 +73,9 @@ TEST(DormTest, should_store_two_record_in_database)
     auto p1 = Person("John Smith", 35);
     session->save(p1);
 
-    auto p1 = session->load<Person>(p1.id());
+    auto p11 = session->load<Person>(p1.id());
 
-    ASSERT_NE(p1, nullptr);
-    ASSERT_EQ(p1->age(), 30);
-    ASSERT_EQ(p1->name(), "John Doe");
+    ASSERT_NE(p11, nullptr);
+    ASSERT_EQ(p11->age(), 30);
+    ASSERT_EQ(p11->name(), "John Doe");
 }
