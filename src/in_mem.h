@@ -8,8 +8,8 @@ namespace dorm::in_mem {
     {
         std::map<std::string, std::any> _values;
     public:
-        void set(const std::string& columnName, std::any&& value) override {
-            _values.try_emplace(columnName, std::forward<std::any>(value));
+        void set(const std::string& columnName, const std::any& value) override {
+            _values.try_emplace(columnName, value);
         }
 
         std::any get(const std::string& columnName) override {
@@ -32,6 +32,29 @@ namespace dorm::in_mem {
 
         void addColumn(const std::string& columnName, std::type_index fieldType, bool isKey=false) {
             _columns.push_back( {columnName, fieldType, isKey} );
+        }
+
+        const std::vector<Column>& columns() const { return _columns; }
+
+        std::optional<std::reference_wrapper<row_t>> get(const std::any& id) {
+            
+            auto it = std::find_if(_rows.begin(), _rows.end(), [&](const auto& row) {
+                auto keys = getKeysWithColumn(row);
+                if (keys.size() == 1)
+                {
+                    const auto& k = keys[0];
+                    const auto& column = std::get<0>(keys[0]);
+                    const std::any& v = std::get<1>(keys[0]);
+                    return GetSupportedFieldType(std::get<0>(keys[0])->type)
+                        ->equal(*std::get<1>(keys[0]), id);
+                }
+                throw std::runtime_error("Composite keys not supported yet");
+            });
+            if (it == _rows.end()) {
+
+                return std::nullopt;
+            }
+            return *it;
         }
 
         void upsert(row_t&& values) {
@@ -73,18 +96,66 @@ namespace dorm::in_mem {
             }
             return keys;
         }
+
+        std::vector<std::tuple<const Column*, const std::any*>> getKeysWithColumn(const row_t& row) {
+            std::vector<std::tuple<const Column*, const std::any*>> pk;
+            for (size_t i = 0; i < _columns.size(); i++)
+            {
+                if (_columns[i].isKey) {
+                    pk.push_back(std::make_tuple(&_columns[i], &row[i]));
+                }
+            }
+            return pk;
+        }
+
+        FieldTypeBase* GetSupportedFieldType(std::type_index type) {
+            auto it = std::find_if(_db->SupportedFieldTypes.begin(), _db->SupportedFieldTypes.end(), [&](const auto& ft) {
+                return ft->type() == type;
+            });
+            if (it == _db->SupportedFieldTypes.end())
+            {
+                throw std::runtime_error(std::string("Unsupported field type ") + type.name());
+            }
+            return (*it).get();
+        }
     };
 
     class InMemDatabase : public Database
     {
         std::vector<std::unique_ptr<Table>> tables;
+
+        Table* getTable(const std::string& name){
+            auto it = std::find_if(tables.begin(), tables.end(), [&](const auto& t) {
+                return t->name() == name;
+            });
+
+            if (it == tables.end()) {
+                throw std::runtime_error("Table not found " + name);
+            }
+            return (*it).get();
+        }
+
     public:
         virtual ~InMemDatabase() = default;
         std::unique_ptr<Session> createSession() override {
             return std::make_unique<Session>(this);
         }
 
-        std::unique_ptr<DbRecord> load(const std::any& id, const std::type_info& type_info) override {
+        std::unique_ptr<DbRecord> load(const std::any& id, const std::type_info& type) override {
+            auto& map = entityMaps[type];
+            auto ptable = getTable(map->tableName());
+            auto optRow = ptable->get(id);
+            
+            if (optRow)
+            {
+                
+                auto result = std::make_unique<InMemRecord>();
+                auto& row = optRow->get();
+                for(auto i = 0; i < ptable->columns().size() ; i++) {
+                    result->set(ptable->columns()[i].name, row[i]);
+                }
+                return result;
+            }
             return nullptr;
         }
 
@@ -93,21 +164,17 @@ namespace dorm::in_mem {
         }
         
         void save(DbRecord* pRecord, const std::type_info& type) override {
-            
             auto& map = entityMaps[type];
-            auto it = std::find_if(tables.begin(), tables.end(), [&](const auto& t) {
-                return t->name() == map->tableName();
-            });
-
+            auto ptable = getTable(map->tableName());
             Table::row_t values;
             for (auto& [columnName, _, __] : map->columns()) {
                 values.push_back(std::forward<std::any>(pRecord->get(columnName)));
             } 
-            (*it)->upsert(std::move(values));
+            ptable->upsert(std::move(values));
         }
 
 
-        void doInit() override {
+        void initialize() override {
             for (auto& [t, map] : entityMaps) {
                 auto ptable = std::make_unique<Table>(map->tableName(), this);
                 for (auto& [columnName, fieldType, isKey] : map->columns()) {

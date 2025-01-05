@@ -35,7 +35,7 @@ namespace dorm {
     struct DbRecord
     {        
         virtual std::any get(const std::string& columnName) = 0;
-        virtual void set(const std::string& columnName, std::any&& value) = 0;
+        virtual void set(const std::string& columnName, const std::any& value) = 0;
         virtual ~DbRecord() = default;
     };
 
@@ -71,7 +71,7 @@ namespace dorm {
     protected:
         std::map<std::type_index, std::unique_ptr<EntityMapBase>> entityMaps;
         virtual ~Database() = default;
-        virtual void doInit() {};
+        virtual void initialize() {};
     public:
         virtual std::unique_ptr<DbRecord> load(const std::any& id, const std::type_info& type_info) = 0;
         virtual std::unique_ptr<DbRecord> create(const std::type_info& type_info) = 0;
@@ -82,7 +82,6 @@ namespace dorm {
         Database() {
             SupportedFieldTypes.push_back(std::make_unique<FieldType<int>>());
             SupportedFieldTypes.push_back(std::make_unique<FieldType<std::string>>());
-            doInit();
         };
 
         template<typename T>
