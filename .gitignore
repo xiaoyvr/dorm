@@ -16,3 +16,6 @@ devenv.local.nix
 /build
 
 CMakeUserPresets.json
+
+/.clangd
+/.zed/

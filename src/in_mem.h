@@ -21,6 +21,7 @@ namespace dorm::in_mem {
         std::string name;
         std::type_index type;
         bool isKey;
+        bool generate;
     };
 
     class Table {
@@ -58,9 +59,9 @@ namespace dorm::in_mem {
         }
 
         void upsert(row_t&& values) {
+            auto valueKeys = getKeys(values);
             auto it = std::find_if(_rows.begin(), _rows.end(), [&](const auto& row) {
                 auto rowKeys = getKeys(row);
-                auto valueKeys = getKeys(values);
                 return std::equal(rowKeys.begin(), rowKeys.end(), valueKeys.begin(), 
                     [this](const auto& lhs, const auto& rhs) {
                         auto it = std::find_if(_db->SupportedFieldTypes.begin(), _db->SupportedFieldTypes.end(), [&](const auto& ft) {
@@ -77,6 +78,12 @@ namespace dorm::in_mem {
             if (it != _rows.end()) {
                 *it = std::move(values);
             } else {
+                auto keys = getKeysWithColumn(values);
+                for (auto& [pcolumn, pvalue] : keys) {
+                    if (pcolumn->isKey && pcolumn->generate) {
+                        *const_cast<std::any*>(pvalue) = generateId();
+                    }
+                }
                 _rows.push_back(std::move(values));
             }
         }
@@ -85,6 +92,11 @@ namespace dorm::in_mem {
         Database* _db;
         std::vector<Column> _columns;
         std::vector<row_t> _rows; // rows should be sorted by id column
+        int _generated = 0;
+
+        int generateId() {
+            return ++_generated;
+        }
 
         std::vector<std::any> getKeys(const row_t& row) {
             std::vector<std::any> keys;
