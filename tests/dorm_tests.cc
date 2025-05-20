@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include "dorm.h"
 #include "entity.h"
+#include "entity_map.h"
 #include "in_mem.h"
 
 

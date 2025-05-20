@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iostream>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -7,6 +8,7 @@
 #include <map>
 #include <any>
 #include <typeinfo>
+#include <vector>
 #include "field_type.h"
 #include "entity_map.h"
 
@@ -67,8 +69,11 @@ namespace dorm {
         void save(T& entity) {
             auto& map = _db->getEntityMap<T>();
             std::unique_ptr<DbRecord> record = _db->create(typeid(T));
-            map.fill(record.get(), entity);
-            _db->save(record.get(), typeid(T));
+            auto* precord = record.get();
+            map.fill(precord, entity);
+            _db->save(precord, typeid(T));
+            std::cout<<std::any_cast<int>(precord->get("id"))<<std::endl;
+            map.update(entity, precord);
         }
     };
 

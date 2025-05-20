@@ -29,7 +29,7 @@ namespace dorm {
             _getter(getter),
             _setter(setter),
             _isKey(false) {};
-        ~ColumnConfig() = default;
+        virtual ~ColumnConfig() = default;
         template<typename> friend class EntityMap;
     protected:
         std::type_index _type;
@@ -57,7 +57,7 @@ namespace dorm {
 
     struct EntityMapBase {
         std::string tableName() const { return _tableName; }
-        virtual std::vector<std::tuple<std::string, std::type_index, bool>> columns() const = 0;
+        virtual std::vector<std::tuple<std::string, std::type_index, bool, bool>> columns() const = 0;
         virtual ~EntityMapBase() = default;
     protected:
         EntityMapBase(const std::string& tableName) : _tableName(tableName) {}
@@ -123,6 +123,12 @@ namespace dorm {
             return instance;
         }
 
+        void update(entity_t& entity, DbRecord* record) const {
+            for (auto& c : configs) {
+                c->_setter (entity, record->get(c->_name));
+            }
+        }
+
         void fill(DbRecord* record, const entity_t& entity) const {
             for (auto& c : configs) {
                 record->set(c->_name, c->_getter(entity));
@@ -137,10 +143,17 @@ namespace dorm {
             using member_t = TM;
         };
 
-        std::vector<std::tuple<std::string, std::type_index, bool>> columns() const override {
-            std::vector<std::tuple<std::string, std::type_index, bool>> result;
+        std::vector<std::tuple<std::string, std::type_index, bool, bool>> columns() const override {
+            std::vector<std::tuple<std::string, std::type_index, bool, bool>> result;
             for (auto& c : configs) {
-                result.push_back(std::make_tuple(c->_name, c->_type, c->_isKey));
+
+                auto* pIdColumnConfig = dynamic_cast<IdColumnConfig<T>*>(c.get());
+                if(pIdColumnConfig) {
+                    result.push_back(std::make_tuple(pIdColumnConfig->_name, pIdColumnConfig->_type,
+                        pIdColumnConfig->_isKey, pIdColumnConfig->_generated));
+                } else {
+                    result.push_back(std::make_tuple(c->_name, c->_type, c->_isKey, false));
+                }
             }
             return result;
         };
